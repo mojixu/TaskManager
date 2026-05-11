@@ -20,12 +20,13 @@ if (-not (Test-Path 'dist\index.html')) {
 
 $server = Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort 4173 -State Listen -ErrorAction SilentlyContinue
 if (-not $server) {
+  $serverScript = Join-Path $projectRoot 'scripts\serve-pwa.ps1'
   Start-Process -FilePath 'powershell.exe' -ArgumentList @(
     '-NoProfile',
     '-ExecutionPolicy',
     'Bypass',
     '-File',
-    (Join-Path $projectRoot 'scripts\serve-pwa.ps1')
+    "`"$serverScript`""
   ) -WorkingDirectory $projectRoot -WindowStyle Hidden
   Start-Sleep -Seconds 3
 }

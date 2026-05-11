@@ -38,8 +38,32 @@ export interface Mentor {
   updated_at: string
 }
 
+export interface MentorReport {
+  id: string
+  user_id?: string
+  mentor_id: string
+  report_date: string
+  content: string
+  feedback: string | null
+  next_steps: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type CopyMap = Record<string, string>
+
+export interface ProfileSettings {
+  id?: string
+  user_id?: string
+  copy: CopyMap
+  created_at?: string
+  updated_at?: string
+}
+
 export interface DashboardData {
   todos: Todo[]
   birthdays: Birthday[]
   mentors: Mentor[]
+  mentorReports: MentorReport[]
+  settings: ProfileSettings
 }

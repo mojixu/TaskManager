@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { Session } from '@supabase/supabase-js'
 import type { LucideIcon } from 'lucide-react'
 import {
+  Brush,
   CalendarDays,
   CheckCircle2,
   Circle,
@@ -11,13 +12,16 @@ import {
   Gift,
   HandHeart,
   Home,
+  History,
   LogOut,
   Mail,
   Plus,
+  RotateCcw,
   Save,
   Sparkles,
   Trash2,
   UserRound,
+  WandSparkles,
   X,
 } from 'lucide-react'
 import clsx from 'clsx'
@@ -29,8 +33,19 @@ import {
   isValidMonthDay,
   sortBirthdaysByNext,
 } from './lib/birthday'
+import { defaultCopy, mergeCopy, type CopyKey } from './lib/copy'
+import { buildMentorReportDraft, buildMentorSuggestion, sortMentorReports } from './lib/mentorReports'
 import { isSupabaseConfigured, supabase } from './lib/supabase'
-import type { Birthday, DashboardData, Mentor, Todo, TodoPriority, TodoStatus } from './types'
+import type {
+  Birthday,
+  DashboardData,
+  Mentor,
+  MentorReport,
+  ProfileSettings,
+  Todo,
+  TodoPriority,
+  TodoStatus,
+} from './types'
 import './index.css'
 
 type ViewKey = 'overview' | 'todos' | 'birthdays' | 'mentors'
@@ -60,13 +75,25 @@ type MentorForm = {
   notes: string
 }
 
+type MentorReportForm = {
+  report_date: string
+  content: string
+  feedback: string
+  next_steps: string
+}
+
 const REMINDER_EMAIL = '2309117485@qq.com'
 const LOCAL_KEY = 'task-manager-panel-data-v1'
+const defaultSettings: ProfileSettings = {
+  copy: defaultCopy,
+}
 
 const emptyData: DashboardData = {
   todos: [],
   birthdays: [],
   mentors: [],
+  mentorReports: [],
+  settings: defaultSettings,
 }
 
 const emptyTodoForm: TodoForm = {
@@ -94,23 +121,30 @@ const emptyMentorForm: MentorForm = {
   notes: '',
 }
 
-const navItems: Array<{ key: ViewKey; label: string; icon: LucideIcon }> = [
-  { key: 'overview', label: '总览', icon: Home },
-  { key: 'todos', label: '待办', icon: CheckCircle2 },
-  { key: 'birthdays', label: '生日', icon: Gift },
-  { key: 'mentors', label: '大佬', icon: HandHeart },
-]
-
-const statusMeta: Record<TodoStatus, { label: string; icon: LucideIcon }> = {
-  todo: { label: '待启', icon: Circle },
-  doing: { label: '进行', icon: Clock3 },
-  done: { label: '已成', icon: CheckCircle2 },
+const emptyMentorReportForm: MentorReportForm = {
+  report_date: '',
+  content: '',
+  feedback: '',
+  next_steps: '',
 }
 
-const priorityMeta: Record<TodoPriority, { label: string; tone: string }> = {
-  low: { label: '从容', tone: 'jade' },
-  medium: { label: '适中', tone: 'ochre' },
-  high: { label: '要紧', tone: 'cinnabar' },
+const navItems: Array<{ key: ViewKey; labelKey: CopyKey; icon: LucideIcon }> = [
+  { key: 'overview', labelKey: 'navOverview', icon: Home },
+  { key: 'todos', labelKey: 'navTodos', icon: CheckCircle2 },
+  { key: 'birthdays', labelKey: 'navBirthdays', icon: Gift },
+  { key: 'mentors', labelKey: 'navMentors', icon: HandHeart },
+]
+
+const statusMeta: Record<TodoStatus, { labelKey: CopyKey; icon: LucideIcon }> = {
+  todo: { labelKey: 'statusTodo', icon: Circle },
+  doing: { labelKey: 'statusDoing', icon: Clock3 },
+  done: { labelKey: 'statusDone', icon: CheckCircle2 },
+}
+
+const priorityMeta: Record<TodoPriority, { labelKey: CopyKey; tone: string }> = {
+  low: { labelKey: 'priorityLow', tone: 'jade' },
+  medium: { labelKey: 'priorityMedium', tone: 'ochre' },
+  high: { labelKey: 'priorityHigh', tone: 'cinnabar' },
 }
 
 function nowIso() {
@@ -183,6 +217,8 @@ function getSeedData(): DashboardData {
         updated_at: created,
       },
     ],
+    mentorReports: [],
+    settings: defaultSettings,
   }
 }
 
@@ -202,6 +238,12 @@ function readLocalData(): DashboardData {
       todos: parsed.todos ?? [],
       birthdays: parsed.birthdays ?? [],
       mentors: parsed.mentors ?? [],
+      mentorReports: parsed.mentorReports ?? [],
+      settings: {
+        ...defaultSettings,
+        ...(parsed.settings ?? {}),
+        copy: mergeCopy(parsed.settings?.copy),
+      },
     }
   } catch {
     return getSeedData()
@@ -211,6 +253,13 @@ function readLocalData(): DashboardData {
 function writeLocalData(data: DashboardData) {
   if (typeof window !== 'undefined') {
     window.localStorage.setItem(LOCAL_KEY, JSON.stringify(data))
+  }
+}
+
+function makeEmptyReportForm() {
+  return {
+    ...emptyMentorReportForm,
+    report_date: toDateInputValue(new Date()),
   }
 }
 
@@ -234,6 +283,8 @@ function App() {
   const [todos, setTodos] = useState<Todo[]>(initialData.todos)
   const [birthdays, setBirthdays] = useState<Birthday[]>(initialData.birthdays)
   const [mentors, setMentors] = useState<Mentor[]>(initialData.mentors)
+  const [mentorReports, setMentorReports] = useState<MentorReport[]>(initialData.mentorReports)
+  const [settings, setSettings] = useState<ProfileSettings>(initialData.settings)
   const [session, setSession] = useState<Session | null>(null)
   const [authLoading, setAuthLoading] = useState(isSupabaseConfigured)
   const [dataLoading, setDataLoading] = useState(false)
@@ -250,21 +301,36 @@ function App() {
   const [birthdayForm, setBirthdayForm] = useState<BirthdayForm | null>(null)
   const [editingMentorId, setEditingMentorId] = useState<string | null>(null)
   const [mentorForm, setMentorForm] = useState<MentorForm | null>(null)
+  const [mentorReportForm, setMentorReportForm] = useState<MentorReportForm | null>(null)
+  const [editingMentorReportId, setEditingMentorReportId] = useState<string | null>(null)
+  const [customizeMode, setCustomizeMode] = useState(false)
+  const [copyEditorKey, setCopyEditorKey] = useState<CopyKey | null>(null)
+  const [copyEditorValue, setCopyEditorValue] = useState('')
+
+  const copy = settings.copy
+  const c = useCallback((key: CopyKey) => copy[key] ?? defaultCopy[key], [copy])
 
   const currentData = useCallback(
     (overrides: Partial<DashboardData> = {}): DashboardData => ({
       todos,
       birthdays,
       mentors,
+      mentorReports,
+      settings,
       ...overrides,
     }),
-    [birthdays, mentors, todos],
+    [birthdays, mentorReports, mentors, settings, todos],
   )
 
   const commitLocalData = useCallback((next: DashboardData) => {
     setTodos(next.todos)
     setBirthdays(next.birthdays)
     setMentors(next.mentors)
+    setMentorReports(next.mentorReports)
+    setSettings({
+      ...next.settings,
+      copy: mergeCopy(next.settings.copy),
+    })
     writeLocalData(next)
   }, [])
 
@@ -274,19 +340,32 @@ function App() {
     setDataLoading(true)
     setError(null)
 
-    const [todosResponse, birthdaysResponse, mentorsResponse] = await Promise.all([
+    const [todosResponse, birthdaysResponse, mentorsResponse, reportsResponse, settingsResponse] = await Promise.all([
       supabase.from('todos').select('*').order('created_at', { ascending: false }),
       supabase.from('birthdays').select('*').order('name', { ascending: true }),
       supabase.from('mentors').select('*').order('name', { ascending: true }),
+      supabase.from('mentor_reports').select('*').order('report_date', { ascending: false }),
+      supabase.from('profile_settings').select('*').eq('user_id', session.user.id).maybeSingle(),
     ])
 
-    const firstError = todosResponse.error ?? birthdaysResponse.error ?? mentorsResponse.error
+    const firstError =
+      todosResponse.error ??
+      birthdaysResponse.error ??
+      mentorsResponse.error ??
+      reportsResponse.error ??
+      settingsResponse.error
     if (firstError) {
       setError(firstError.message)
     } else {
       setTodos((todosResponse.data ?? []) as Todo[])
       setBirthdays((birthdaysResponse.data ?? []) as Birthday[])
       setMentors((mentorsResponse.data ?? []) as Mentor[])
+      setMentorReports((reportsResponse.data ?? []) as MentorReport[])
+      setSettings({
+        ...defaultSettings,
+        ...((settingsResponse.data as ProfileSettings | null) ?? {}),
+        copy: mergeCopy((settingsResponse.data as ProfileSettings | null)?.copy),
+      })
     }
 
     setDataLoading(false)
@@ -341,6 +420,7 @@ function App() {
         }),
     [mentors],
   )
+  const sortedMentorReports = useMemo(() => sortMentorReports(mentorReports), [mentorReports])
 
   const todayInput = toDateInputValue(new Date())
   const dueSoonTodos = activeTodos
@@ -379,6 +459,8 @@ function App() {
     setTodos([])
     setBirthdays([])
     setMentors([])
+    setMentorReports([])
+    setSettings(defaultSettings)
   }
 
   function openTodoEditor(todo?: Todo) {
@@ -571,6 +653,8 @@ function App() {
 
   function openMentorEditor(mentor?: Mentor) {
     setEditingMentorId(mentor?.id ?? null)
+    setEditingMentorReportId(null)
+    setMentorReportForm(mentor ? makeEmptyReportForm() : null)
     setMentorForm(
       mentor
         ? {
@@ -666,12 +750,187 @@ function App() {
       setMentors((items) => items.filter((item) => item.id !== mentorId))
     } else {
       const nextMentors = mentors.filter((mentor) => mentor.id !== mentorId)
-      commitLocalData(currentData({ mentors: nextMentors }))
+      const nextReports = mentorReports.filter((report) => report.mentor_id !== mentorId)
+      commitLocalData(currentData({ mentors: nextMentors, mentorReports: nextReports }))
+    }
+  }
+
+  function openCopyEditor(key: CopyKey) {
+    setCopyEditorKey(key)
+    setCopyEditorValue(c(key))
+  }
+
+  async function saveCopyValue(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!copyEditorKey) return
+
+    await persistSettings({
+      ...settings,
+      copy: mergeCopy({
+        ...copy,
+        [copyEditorKey]: copyEditorValue.trim() || defaultCopy[copyEditorKey],
+      }),
+    })
+    setCopyEditorKey(null)
+  }
+
+  async function resetCopyValue() {
+    if (!copyEditorKey) return
+
+    const nextCopy = { ...copy }
+    delete nextCopy[copyEditorKey]
+    await persistSettings({
+      ...settings,
+      copy: mergeCopy(nextCopy),
+    })
+    setCopyEditorValue(defaultCopy[copyEditorKey])
+  }
+
+  async function persistSettings(nextSettings: ProfileSettings) {
+    const normalized = {
+      ...nextSettings,
+      copy: mergeCopy(nextSettings.copy),
+    }
+
+    if (supabase && session) {
+      const payload = {
+        user_id: session.user.id,
+        copy: normalized.copy,
+      }
+      const { data, error: saveError } = await supabase
+        .from('profile_settings')
+        .upsert(payload, { onConflict: 'user_id' })
+        .select()
+        .single()
+
+      if (saveError) {
+        setError(saveError.message)
+        return
+      }
+
+      setSettings({
+        ...defaultSettings,
+        ...(data as ProfileSettings),
+        copy: mergeCopy((data as ProfileSettings).copy),
+      })
+    } else {
+      commitLocalData(currentData({ settings: normalized }))
+    }
+  }
+
+  function openMentorReportEditor(report?: MentorReport) {
+    setEditingMentorReportId(report?.id ?? null)
+    setMentorReportForm(
+      report
+        ? {
+            report_date: report.report_date,
+            content: report.content,
+            feedback: report.feedback ?? '',
+            next_steps: report.next_steps ?? '',
+          }
+        : makeEmptyReportForm(),
+    )
+  }
+
+  function fillMentorReportDraft() {
+    if (!editingMentorId) return
+    const mentor = mentors.find((item) => item.id === editingMentorId)
+    if (!mentor) return
+
+    const reports = sortedMentorReports.filter((report) => report.mentor_id === mentor.id)
+    const draft = buildMentorReportDraft(mentor, reports, todos)
+    setMentorReportForm({
+      ...(mentorReportForm ?? makeEmptyReportForm()),
+      content: draft.content,
+      next_steps: draft.next_steps ?? '',
+    })
+  }
+
+  async function handleMentorReportSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!mentorReportForm || !editingMentorId) return
+
+    if (!mentorReportForm.content.trim()) {
+      setError('汇报内容不能为空。')
+      return
+    }
+
+    setError(null)
+    const payload = {
+      mentor_id: editingMentorId,
+      report_date: mentorReportForm.report_date || todayInput,
+      content: mentorReportForm.content.trim(),
+      feedback: mentorReportForm.feedback.trim() || null,
+      next_steps: mentorReportForm.next_steps.trim() || null,
+      updated_at: nowIso(),
+    }
+
+    if (supabase && session) {
+      const query = editingMentorReportId
+        ? supabase.from('mentor_reports').update(payload).eq('id', editingMentorReportId)
+        : supabase.from('mentor_reports').insert({ ...payload, user_id: session.user.id })
+
+      const { data, error: saveError } = await query.select().single()
+      if (saveError) {
+        setError(saveError.message)
+        return
+      }
+
+      const saved = data as MentorReport
+      setMentorReports((items) =>
+        editingMentorReportId
+          ? items.map((item) => (item.id === saved.id ? saved : item))
+          : [saved, ...items],
+      )
+    } else {
+      const saved: MentorReport = {
+        id: editingMentorReportId ?? createId(),
+        created_at:
+          mentorReports.find((report) => report.id === editingMentorReportId)?.created_at ?? nowIso(),
+        ...payload,
+      }
+      const nextReports = editingMentorReportId
+        ? mentorReports.map((report) => (report.id === editingMentorReportId ? saved : report))
+        : [saved, ...mentorReports]
+
+      commitLocalData(currentData({ mentorReports: nextReports }))
+    }
+
+    setMentorReportForm(makeEmptyReportForm())
+    setEditingMentorReportId(null)
+  }
+
+  async function deleteMentorReport(reportId: string) {
+    if (!window.confirm('确定删除这条汇报记录吗？')) return
+
+    if (supabase && session) {
+      const { error: deleteError } = await supabase.from('mentor_reports').delete().eq('id', reportId)
+      if (deleteError) {
+        setError(deleteError.message)
+        return
+      }
+
+      setMentorReports((items) => items.filter((item) => item.id !== reportId))
+    } else {
+      const nextReports = mentorReports.filter((report) => report.id !== reportId)
+      commitLocalData(currentData({ mentorReports: nextReports }))
     }
   }
 
   if (authLoading) {
-    return <LoadingScreen label="正在开卷" />
+    return <LoadingScreen label={c('loadingBoot')} />
+  }
+
+  function editableText(key: CopyKey, className?: string) {
+    return (
+      <EditableText
+        className={className}
+        copyKey={key}
+        customizeMode={customizeMode}
+        value={c(key)}
+        onEdit={openCopyEditor}
+      />
+    )
   }
 
   if (isSupabaseConfigured && !session) {
@@ -682,6 +941,7 @@ function App() {
         authPassword={authPassword}
         error={error}
         notice={notice}
+        text={c}
         onEmailChange={setAuthEmail}
         onModeChange={setAuthMode}
         onPasswordChange={setAuthPassword}
@@ -693,34 +953,48 @@ function App() {
   return (
     <div className="app-shell">
       <img className="ink-landscape" src="/ink-landscape.svg" alt="" aria-hidden="true" />
-      <aside className="side-nav" aria-label="主导航">
+      <aside className="side-nav" aria-label={c('navOverview')}>
         <div className="brand-block">
           <div className="brand-seal">墨</div>
           <div>
-            <p className="brand-title">墨迹面板</p>
-            <p className="brand-subtitle">任务有序，人情不忘</p>
+            <p className="brand-title">{editableText('appName')}</p>
+            <p className="brand-subtitle">{editableText('brandSubtitle')}</p>
           </div>
         </div>
-        <NavList activeView={activeView} onChange={setActiveView} />
+        <NavList
+          activeView={activeView}
+          customizeMode={customizeMode}
+          text={c}
+          onChange={setActiveView}
+          onEditCopy={openCopyEditor}
+        />
         <div className="sync-chip">
           <Sparkles size={16} />
-          <span>{isSupabaseConfigured ? '云同步' : '本地预览'}</span>
+          <span>{editableText(isSupabaseConfigured ? 'syncCloud' : 'syncLocal')}</span>
         </div>
       </aside>
 
       <div className="main-column">
         <header className="topbar">
           <div>
-            <p className="eyebrow">北京时间 20:00 生日提醒</p>
-            <h1>把眼前事与重要的人，都稳稳放在手边</h1>
+            <p className="eyebrow">{editableText('birthdayReminderEyebrow')}</p>
+            <h1>{editableText('heroTitle')}</h1>
           </div>
           <div className="topbar-actions">
             <button className="icon-text-button muted" type="button" onClick={() => setActiveView('birthdays')}>
               <Mail size={18} />
               <span>{REMINDER_EMAIL}</span>
             </button>
+            <button
+              className={clsx('icon-text-button', customizeMode && 'active')}
+              type="button"
+              onClick={() => setCustomizeMode((value) => !value)}
+            >
+              <Brush size={18} />
+              <span>{customizeMode ? c('doneCustomizing') : c('customize')}</span>
+            </button>
             {session ? (
-              <button className="icon-button" type="button" onClick={handleSignOut} aria-label="退出登录">
+              <button className="icon-button" type="button" onClick={handleSignOut} aria-label={c('signOut')}>
                 <LogOut size={20} />
               </button>
             ) : null}
@@ -729,14 +1003,14 @@ function App() {
 
         {!isSupabaseConfigured ? (
           <div className="notice-bar">
-            当前为本地预览模式。填入 Supabase 环境变量后，Android 和 Windows 会自动使用云同步。
+            {editableText('localPreviewNotice')}
           </div>
         ) : null}
         {error ? <div className="error-bar">{error}</div> : null}
         {notice ? <div className="notice-bar">{notice}</div> : null}
 
         {dataLoading ? (
-          <LoadingScreen label="正在取数" compact />
+          <LoadingScreen label={c('loadingData')} compact />
         ) : (
           <main className="workspace">
             {activeView === 'overview'
@@ -750,13 +1024,21 @@ function App() {
         )}
       </div>
 
-      <nav className="bottom-nav" aria-label="移动端主导航">
-        <NavList activeView={activeView} onChange={setActiveView} compact />
+      <nav className="bottom-nav" aria-label={c('navOverview')}>
+        <NavList
+          activeView={activeView}
+          compact
+          customizeMode={customizeMode}
+          text={c}
+          onChange={setActiveView}
+          onEditCopy={openCopyEditor}
+        />
       </nav>
 
       {todoForm ? renderTodoDrawer() : null}
       {birthdayForm ? renderBirthdayDrawer() : null}
       {mentorForm ? renderMentorDrawer() : null}
+      {copyEditorKey ? renderCopyEditor() : null}
     </div>
   )
 
@@ -765,37 +1047,37 @@ function App() {
       <>
         <section className="overview-band">
           <div>
-            <p className="eyebrow">今日总览</p>
-            <h2>案头清爽，心里就有余地</h2>
+            <p className="eyebrow">{editableText('overviewEyebrow')}</p>
+            <h2>{editableText('overviewTitle')}</h2>
           </div>
           <div className="stat-grid">
-            <StatTile label="未完成" value={activeTodos.length} icon={CheckCircle2} />
-            <StatTile label="已完成" value={doneTodos} icon={CheckCircle2} />
-            <StatTile label="三日生日" value={birthdayAlerts.length} icon={Gift} />
-            <StatTile label="维护对象" value={mentors.length} icon={HandHeart} />
+            <StatTile label={editableText('statActiveTodos')} value={activeTodos.length} icon={CheckCircle2} />
+            <StatTile label={editableText('statDoneTodos')} value={doneTodos} icon={CheckCircle2} />
+            <StatTile label={editableText('statBirthdayAlerts')} value={birthdayAlerts.length} icon={Gift} />
+            <StatTile label={editableText('statMentors')} value={mentors.length} icon={HandHeart} />
           </div>
         </section>
 
         <section className="overview-grid">
           <ListColumn
-            title="近期待办"
+            title={editableText('upcomingTodos')}
             icon={Clock3}
-            actionLabel="新待办"
+            actionLabel={editableText('newTodo')}
             onAction={() => openTodoEditor()}
           >
             {dueSoonTodos.length ? (
               dueSoonTodos.map((todo) => (
-                <TodoCard key={todo.id} todo={todo} onDelete={deleteTodo} onOpen={openTodoEditor} />
+                <TodoCard key={todo.id} text={c} todo={todo} onDelete={deleteTodo} onOpen={openTodoEditor} />
               ))
             ) : (
-              <EmptyState label="暂无临近截止的待办" />
+              <EmptyState label={editableText('emptyUpcomingTodos')} />
             )}
           </ListColumn>
 
           <ListColumn
-            title="生日顺序"
+            title={editableText('birthdayOrder')}
             icon={Gift}
-            actionLabel="记生日"
+            actionLabel={editableText('addBirthday')}
             onAction={() => openBirthdayEditor()}
           >
             {sortedBirthdays.slice(0, 4).length ? (
@@ -805,19 +1087,20 @@ function App() {
                   <BirthdayCard
                     key={birthday.id}
                     birthday={birthday}
+                    text={c}
                     onDelete={deleteBirthday}
                     onOpen={openBirthdayEditor}
                   />
                 ))
             ) : (
-              <EmptyState label="暂无生日记录" />
+              <EmptyState label={editableText('emptyBirthdays')} />
             )}
           </ListColumn>
 
           <ListColumn
-            title="大佬维护"
+            title={editableText('mentorCare')}
             icon={HandHeart}
-            actionLabel="加记录"
+            actionLabel={editableText('addMentor')}
             onAction={() => openMentorEditor()}
           >
             {mentorSignals.slice(0, 4).length ? (
@@ -829,12 +1112,14 @@ function App() {
                     daysLeft={daysLeft}
                     mentor={mentor}
                     nextReportDate={nextReportDate}
+                    reportsCount={mentorReports.filter((report) => report.mentor_id === mentor.id).length}
+                    text={c}
                     onDelete={deleteMentor}
                     onOpen={openMentorEditor}
                   />
                 ))
             ) : (
-              <EmptyState label="暂无维护记录" />
+              <EmptyState label={editableText('emptyMentors')} />
             )}
           </ListColumn>
         </section>
@@ -846,18 +1131,19 @@ function App() {
     return (
       <section className="page-section">
         <SectionHeader
-          actionLabel="新待办"
+          actionLabel={editableText('newTodo')}
           icon={CheckCircle2}
-          title="待办任务"
+          eyebrow={editableText('listEyebrow')}
+          title={editableText('todosTitle')}
           onAction={() => openTodoEditor()}
         />
         <div className="record-list">
           {todos.length ? (
             todos.map((todo) => (
-              <TodoCard key={todo.id} todo={todo} onDelete={deleteTodo} onOpen={openTodoEditor} />
+              <TodoCard key={todo.id} text={c} todo={todo} onDelete={deleteTodo} onOpen={openTodoEditor} />
             ))
           ) : (
-            <EmptyState label="还没有待办" />
+            <EmptyState label={editableText('emptyTodos')} />
           )}
         </div>
       </section>
@@ -868,9 +1154,10 @@ function App() {
     return (
       <section className="page-section">
         <SectionHeader
-          actionLabel="记生日"
+          actionLabel={editableText('addBirthday')}
           icon={Gift}
-          title="生日清单"
+          eyebrow={editableText('listEyebrow')}
+          title={editableText('birthdaysTitle')}
           onAction={() => openBirthdayEditor()}
         />
         <div className="record-list">
@@ -879,12 +1166,13 @@ function App() {
               <BirthdayCard
                 key={birthday.id}
                 birthday={birthday}
+                text={c}
                 onDelete={deleteBirthday}
                 onOpen={openBirthdayEditor}
               />
             ))
           ) : (
-            <EmptyState label="还没有生日记录" />
+            <EmptyState label={editableText('emptyBirthdays')} />
           )}
         </div>
       </section>
@@ -895,9 +1183,10 @@ function App() {
     return (
       <section className="page-section">
         <SectionHeader
-          actionLabel="加记录"
+          actionLabel={editableText('addMentor')}
           icon={HandHeart}
-          title="大佬维护清单"
+          eyebrow={editableText('listEyebrow')}
+          title={editableText('mentorsTitle')}
           onAction={() => openMentorEditor()}
         />
         <div className="record-list">
@@ -908,12 +1197,14 @@ function App() {
                 daysLeft={daysLeft}
                 mentor={mentor}
                 nextReportDate={nextReportDate}
+                reportsCount={mentorReports.filter((report) => report.mentor_id === mentor.id).length}
+                text={c}
                 onDelete={deleteMentor}
                 onOpen={openMentorEditor}
               />
             ))
           ) : (
-            <EmptyState label="还没有维护记录" />
+              <EmptyState label={editableText('emptyMentors')} />
           )}
         </div>
       </section>
@@ -924,52 +1215,57 @@ function App() {
     if (!todoForm) return null
 
     return (
-      <Drawer icon={CheckCircle2} title={editingTodoId ? '编辑待办' : '新建待办'} onClose={() => setTodoForm(null)}>
+      <Drawer
+        closeLabel={c('close')}
+        icon={CheckCircle2}
+        title={editingTodoId ? editableText('editTodoTitle') : editableText('newTodoTitle')}
+        onClose={() => setTodoForm(null)}
+      >
         <form className="editor-form" onSubmit={handleTodoSubmit}>
           <label>
-            <span>标题</span>
+            <span>{editableText('todoTitleLabel')}</span>
             <input
               required
               value={todoForm.title}
               onChange={(event) => setTodoForm({ ...todoForm, title: event.target.value })}
-              placeholder="这件事叫什么"
+              placeholder={c('todoTitlePlaceholder')}
             />
           </label>
           <label>
-            <span>具体要求</span>
+            <span>{editableText('todoDetailsLabel')}</span>
             <textarea
               value={todoForm.details}
               onChange={(event) => setTodoForm({ ...todoForm, details: event.target.value })}
-              placeholder="验收标准、背景、注意事项"
+              placeholder={c('todoDetailsPlaceholder')}
               rows={8}
             />
           </label>
           <div className="form-grid">
             <label>
-              <span>状态</span>
+              <span>{editableText('statusLabel')}</span>
               <select
                 value={todoForm.status}
                 onChange={(event) => setTodoForm({ ...todoForm, status: event.target.value as TodoStatus })}
               >
-                <option value="todo">待启</option>
-                <option value="doing">进行</option>
-                <option value="done">已成</option>
+                <option value="todo">{c('statusTodo')}</option>
+                <option value="doing">{c('statusDoing')}</option>
+                <option value="done">{c('statusDone')}</option>
               </select>
             </label>
             <label>
-              <span>优先级</span>
+              <span>{editableText('priorityLabel')}</span>
               <select
                 value={todoForm.priority}
                 onChange={(event) => setTodoForm({ ...todoForm, priority: event.target.value as TodoPriority })}
               >
-                <option value="low">从容</option>
-                <option value="medium">适中</option>
-                <option value="high">要紧</option>
+                <option value="low">{c('priorityLow')}</option>
+                <option value="medium">{c('priorityMedium')}</option>
+                <option value="high">{c('priorityHigh')}</option>
               </select>
             </label>
           </div>
           <label>
-            <span>截止时间</span>
+            <span>{editableText('dueDateLabel')}</span>
             <input
               min="2000-01-01"
               type="date"
@@ -977,7 +1273,7 @@ function App() {
               onChange={(event) => setTodoForm({ ...todoForm, due_date: event.target.value })}
             />
           </label>
-          <FormActions onCancel={() => setTodoForm(null)} />
+          <FormActions cancelLabel={c('cancel')} saveLabel={c('save')} onCancel={() => setTodoForm(null)} />
         </form>
       </Drawer>
     )
@@ -987,20 +1283,25 @@ function App() {
     if (!birthdayForm) return null
 
     return (
-      <Drawer icon={Gift} title={editingBirthdayId ? '编辑生日' : '记录生日'} onClose={() => setBirthdayForm(null)}>
+      <Drawer
+        closeLabel={c('close')}
+        icon={Gift}
+        title={editingBirthdayId ? editableText('editBirthdayTitle') : editableText('newBirthdayTitle')}
+        onClose={() => setBirthdayForm(null)}
+      >
         <form className="editor-form" onSubmit={handleBirthdaySubmit}>
           <label>
-            <span>姓名</span>
+            <span>{editableText('nameLabel')}</span>
             <input
               required
               value={birthdayForm.name}
               onChange={(event) => setBirthdayForm({ ...birthdayForm, name: event.target.value })}
-              placeholder="要记住谁"
+              placeholder={c('birthdayNamePlaceholder')}
             />
           </label>
           <div className="form-grid">
             <label>
-              <span>月份</span>
+              <span>{editableText('monthLabel')}</span>
               <input
                 max={12}
                 min={1}
@@ -1011,7 +1312,7 @@ function App() {
               />
             </label>
             <label>
-              <span>日期</span>
+              <span>{editableText('dayLabel')}</span>
               <input
                 max={31}
                 min={1}
@@ -1024,34 +1325,34 @@ function App() {
           </div>
           <div className="form-grid">
             <label>
-              <span>出生年份</span>
+              <span>{editableText('birthYearLabel')}</span>
               <input
                 min={1900}
                 type="number"
                 value={birthdayForm.birth_year}
                 onChange={(event) => setBirthdayForm({ ...birthdayForm, birth_year: event.target.value })}
-                placeholder="可不填"
+                placeholder={c('optionalPlaceholder')}
               />
             </label>
             <label>
-              <span>关系</span>
+              <span>{editableText('relationshipLabel')}</span>
               <input
                 value={birthdayForm.relationship}
                 onChange={(event) => setBirthdayForm({ ...birthdayForm, relationship: event.target.value })}
-                placeholder="朋友、家人、同学"
+                placeholder={c('relationshipPlaceholder')}
               />
             </label>
           </div>
           <label>
-            <span>备注</span>
+            <span>{editableText('notesLabel')}</span>
             <textarea
               value={birthdayForm.notes}
               onChange={(event) => setBirthdayForm({ ...birthdayForm, notes: event.target.value })}
-              placeholder="礼物、祝福、忌口"
+              placeholder={c('birthdayNotesPlaceholder')}
               rows={5}
             />
           </label>
-          <FormActions onCancel={() => setBirthdayForm(null)} />
+          <FormActions cancelLabel={c('cancel')} saveLabel={c('save')} onCancel={() => setBirthdayForm(null)} />
         </form>
       </Drawer>
     )
@@ -1059,42 +1360,54 @@ function App() {
 
   function renderMentorDrawer() {
     if (!mentorForm) return null
+    const currentMentor = editingMentorId ? mentors.find((mentor) => mentor.id === editingMentorId) : null
+    const reportsForMentor = editingMentorId
+      ? sortedMentorReports.filter((report) => report.mentor_id === editingMentorId)
+      : []
+    const suggestion = currentMentor
+      ? buildMentorSuggestion(currentMentor, reportsForMentor, todos)
+      : ''
 
     return (
-      <Drawer icon={HandHeart} title={editingMentorId ? '编辑维护' : '记录大佬'} onClose={() => setMentorForm(null)}>
+      <Drawer
+        closeLabel={c('close')}
+        icon={HandHeart}
+        title={editingMentorId ? editableText('editMentorTitle') : editableText('newMentorTitle')}
+        onClose={() => setMentorForm(null)}
+      >
         <form className="editor-form" onSubmit={handleMentorSubmit}>
           <label>
-            <span>姓名</span>
+            <span>{editableText('nameLabel')}</span>
             <input
               required
               value={mentorForm.name}
               onChange={(event) => setMentorForm({ ...mentorForm, name: event.target.value })}
-              placeholder="对方怎么称呼"
+              placeholder={c('mentorNamePlaceholder')}
             />
           </label>
           <label>
-            <span>帮助过我的事</span>
+            <span>{editableText('helpedWithLabel')}</span>
             <textarea
               required
               value={mentorForm.helped_with}
               onChange={(event) => setMentorForm({ ...mentorForm, helped_with: event.target.value })}
-              placeholder="对方给过什么建议、资源或关键帮助"
+              placeholder={c('helpedWithPlaceholder')}
               rows={6}
             />
           </label>
           <div className="form-grid">
             <label>
-              <span>汇报周期</span>
+              <span>{editableText('reportCycleLabel')}</span>
               <input
                 min={1}
                 type="number"
                 value={mentorForm.report_cycle_days}
                 onChange={(event) => setMentorForm({ ...mentorForm, report_cycle_days: event.target.value })}
-                placeholder="天数"
+                placeholder={c('daysPlaceholder')}
               />
             </label>
             <label>
-              <span>上次汇报</span>
+              <span>{editableText('lastReportedLabel')}</span>
               <input
                 max={todayInput}
                 type="date"
@@ -1104,15 +1417,171 @@ function App() {
             </label>
           </div>
           <label>
-            <span>备注</span>
+            <span>{editableText('notesLabel')}</span>
             <textarea
               value={mentorForm.notes}
               onChange={(event) => setMentorForm({ ...mentorForm, notes: event.target.value })}
-              placeholder="下次汇报重点、对方偏好"
+              placeholder={c('mentorNotesPlaceholder')}
               rows={5}
             />
           </label>
-          <FormActions onCancel={() => setMentorForm(null)} />
+          <FormActions cancelLabel={c('cancel')} saveLabel={c('save')} onCancel={() => setMentorForm(null)} />
+        </form>
+        {currentMentor ? (
+          <div className="mentor-report-zone">
+            <section className="suggestion-panel">
+              <header>
+                <h3>
+                  <WandSparkles size={18} />
+                  <span>{editableText('reportSuggestionTitle')}</span>
+                </h3>
+                <button className="small-action" type="button" onClick={fillMentorReportDraft}>
+                  <Sparkles size={16} />
+                  <span>{editableText('reportDraftButton')}</span>
+                </button>
+              </header>
+              <p>{suggestion}</p>
+            </section>
+
+            <section className="report-editor-panel">
+              <h3>
+                <History size={18} />
+                <span>
+                  {editingMentorReportId ? editableText('editReportTitle') : editableText('newReportTitle')}
+                </span>
+              </h3>
+              <form className="editor-form" onSubmit={handleMentorReportSubmit}>
+                <label>
+                  <span>{editableText('reportDateLabel')}</span>
+                  <input
+                    max={todayInput}
+                    type="date"
+                    value={mentorReportForm?.report_date ?? todayInput}
+                    onChange={(event) =>
+                      setMentorReportForm({ ...(mentorReportForm ?? makeEmptyReportForm()), report_date: event.target.value })
+                    }
+                  />
+                </label>
+                <label>
+                  <span>{editableText('reportContentLabel')}</span>
+                  <textarea
+                    value={mentorReportForm?.content ?? ''}
+                    onChange={(event) =>
+                      setMentorReportForm({ ...(mentorReportForm ?? makeEmptyReportForm()), content: event.target.value })
+                    }
+                    placeholder={c('reportContentPlaceholder')}
+                    rows={7}
+                  />
+                </label>
+                <label>
+                  <span>{editableText('reportFeedbackLabel')}</span>
+                  <textarea
+                    value={mentorReportForm?.feedback ?? ''}
+                    onChange={(event) =>
+                      setMentorReportForm({ ...(mentorReportForm ?? makeEmptyReportForm()), feedback: event.target.value })
+                    }
+                    placeholder={c('reportFeedbackPlaceholder')}
+                    rows={4}
+                  />
+                </label>
+                <label>
+                  <span>{editableText('nextStepsLabel')}</span>
+                  <textarea
+                    value={mentorReportForm?.next_steps ?? ''}
+                    onChange={(event) =>
+                      setMentorReportForm({ ...(mentorReportForm ?? makeEmptyReportForm()), next_steps: event.target.value })
+                    }
+                    placeholder={c('nextStepsPlaceholder')}
+                    rows={4}
+                  />
+                </label>
+                <div className="form-actions">
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={() => {
+                      setMentorReportForm(makeEmptyReportForm())
+                      setEditingMentorReportId(null)
+                    }}
+                  >
+                    <X size={18} />
+                    <span>{c('cancel')}</span>
+                  </button>
+                  <button className="primary-button" type="submit">
+                    <Save size={18} />
+                    <span>{editingMentorReportId ? c('updateReport') : c('addReport')}</span>
+                  </button>
+                </div>
+              </form>
+            </section>
+
+            <section className="timeline-panel">
+              <h3>
+                <History size={18} />
+                <span>{editableText('reportTimelineTitle')}</span>
+              </h3>
+              {reportsForMentor.length ? (
+                <div className="timeline-list">
+                  {reportsForMentor.map((report) => (
+                    <article className="timeline-item" key={report.id}>
+                      <div className="timeline-date">{report.report_date}</div>
+                      <p>{report.content}</p>
+                      {report.feedback ? <p className="timeline-muted">{report.feedback}</p> : null}
+                      {report.next_steps ? <p className="timeline-muted">{report.next_steps}</p> : null}
+                      <CardActions
+                        editLabel={c('edit')}
+                        deleteLabel={c('delete')}
+                        onDelete={() => deleteMentorReport(report.id)}
+                        onEdit={() => openMentorReportEditor(report)}
+                      />
+                    </article>
+                  ))}
+                </div>
+              ) : (
+                <EmptyState label={editableText('noReports')} />
+              )}
+            </section>
+          </div>
+        ) : null}
+      </Drawer>
+    )
+  }
+
+  function renderCopyEditor() {
+    if (!copyEditorKey) return null
+
+    return (
+      <Drawer
+        closeLabel={c('close')}
+        icon={Brush}
+        title={editableText('copyEditorTitle')}
+        onClose={() => setCopyEditorKey(null)}
+      >
+        <form className="editor-form" onSubmit={saveCopyValue}>
+          <p className="form-hint">{editableText('copyEditorHint')}</p>
+          <label>
+            <span>{editableText('copyValueLabel')}</span>
+            <textarea
+              value={copyEditorValue}
+              onChange={(event) => setCopyEditorValue(event.target.value)}
+              placeholder={c('copyValuePlaceholder')}
+              rows={5}
+            />
+          </label>
+          <div className="form-actions">
+            <button className="secondary-button" type="button" onClick={resetCopyValue}>
+              <RotateCcw size={18} />
+              <span>{c('resetDefault')}</span>
+            </button>
+            <button className="secondary-button" type="button" onClick={() => setCopyEditorKey(null)}>
+              <X size={18} />
+              <span>{c('cancel')}</span>
+            </button>
+            <button className="primary-button" type="submit">
+              <Save size={18} />
+              <span>{c('save')}</span>
+            </button>
+          </div>
         </form>
       </Drawer>
     )
@@ -1122,11 +1591,17 @@ function App() {
 function NavList({
   activeView,
   compact = false,
+  customizeMode,
+  onEditCopy,
+  text,
   onChange,
 }: {
   activeView: ViewKey
   compact?: boolean
+  customizeMode: boolean
+  text: (key: CopyKey) => string
   onChange: (view: ViewKey) => void
+  onEditCopy: (key: CopyKey) => void
 }) {
   return (
     <div className={clsx('nav-list', compact && 'compact')}>
@@ -1140,7 +1615,12 @@ function NavList({
             onClick={() => onChange(item.key)}
           >
             <Icon size={20} />
-            <span>{item.label}</span>
+            <EditableText
+              copyKey={item.labelKey}
+              customizeMode={customizeMode}
+              value={text(item.labelKey)}
+              onEdit={onEditCopy}
+            />
           </button>
         )
       })}
@@ -1154,6 +1634,7 @@ function AuthScreen({
   authPassword,
   error,
   notice,
+  text,
   onEmailChange,
   onModeChange,
   onPasswordChange,
@@ -1164,6 +1645,7 @@ function AuthScreen({
   authPassword: string
   error: string | null
   notice: string | null
+  text: (key: CopyKey) => string
   onEmailChange: (value: string) => void
   onModeChange: (value: 'signin' | 'signup') => void
   onPasswordChange: (value: string) => void
@@ -1176,19 +1658,19 @@ function AuthScreen({
         <div className="brand-block">
           <div className="brand-seal">墨</div>
           <div>
-            <p className="brand-title">墨迹面板</p>
-            <p className="brand-subtitle">云端同步已开启</p>
+            <p className="brand-title">{text('appName')}</p>
+            <p className="brand-subtitle">{text('authCloudEnabled')}</p>
           </div>
         </div>
         <div>
-          <p className="eyebrow">个人面板</p>
-          <h1>先落座，再开卷</h1>
+          <p className="eyebrow">{text('authEyebrow')}</p>
+          <h1>{text('authTitle')}</h1>
         </div>
         {error ? <div className="error-bar">{error}</div> : null}
         {notice ? <div className="notice-bar">{notice}</div> : null}
         <form className="editor-form" onSubmit={onSubmit}>
           <label>
-            <span>邮箱</span>
+            <span>{text('emailLabel')}</span>
             <input
               autoComplete="email"
               type="email"
@@ -1197,7 +1679,7 @@ function AuthScreen({
             />
           </label>
           <label>
-            <span>密码</span>
+            <span>{text('passwordLabel')}</span>
             <input
               autoComplete={authMode === 'signin' ? 'current-password' : 'new-password'}
               minLength={6}
@@ -1209,7 +1691,7 @@ function AuthScreen({
           </label>
           <button className="primary-button" type="submit">
             <UserRound size={18} />
-            <span>{authMode === 'signin' ? '登录' : '创建账号'}</span>
+            <span>{authMode === 'signin' ? text('login') : text('createAccount')}</span>
           </button>
         </form>
         <button
@@ -1217,7 +1699,7 @@ function AuthScreen({
           type="button"
           onClick={() => onModeChange(authMode === 'signin' ? 'signup' : 'signin')}
         >
-          {authMode === 'signin' ? '第一次使用，创建账号' : '已有账号，返回登录'}
+          {authMode === 'signin' ? text('firstUseCreate') : text('backToLogin')}
         </button>
       </section>
     </div>
@@ -1233,7 +1715,7 @@ function LoadingScreen({ compact = false, label }: { compact?: boolean; label: s
   )
 }
 
-function StatTile({ icon: Icon, label, value }: { icon: LucideIcon; label: string; value: number }) {
+function StatTile({ icon: Icon, label, value }: { icon: LucideIcon; label: ReactNode; value: number }) {
   return (
     <div className="stat-tile">
       <Icon size={18} />
@@ -1245,19 +1727,21 @@ function StatTile({ icon: Icon, label, value }: { icon: LucideIcon; label: strin
 
 function SectionHeader({
   actionLabel,
+  eyebrow,
   icon: Icon,
   onAction,
   title,
 }: {
-  actionLabel: string
+  actionLabel: ReactNode
+  eyebrow: ReactNode
   icon: LucideIcon
   onAction: () => void
-  title: string
+  title: ReactNode
 }) {
   return (
     <header className="section-header">
       <div>
-        <p className="eyebrow">清单</p>
+        <p className="eyebrow">{eyebrow}</p>
         <h2>
           <Icon size={24} />
           <span>{title}</span>
@@ -1278,11 +1762,11 @@ function ListColumn({
   onAction,
   title,
 }: {
-  actionLabel: string
+  actionLabel: ReactNode
   children: ReactNode
   icon: LucideIcon
   onAction: () => void
-  title: string
+  title: ReactNode
 }) {
   return (
     <section className="list-column">
@@ -1304,20 +1788,22 @@ function ListColumn({
 function TodoCard({
   onDelete,
   onOpen,
+  text,
   todo,
 }: {
   onDelete: (todoId: string) => void
   onOpen: (todo: Todo) => void
+  text: (key: CopyKey) => string
   todo: Todo
 }) {
   const StatusIcon = statusMeta[todo.status].icon
   const dueState =
     todo.due_date && todo.status !== 'done'
       ? daysUntilDate(todo.due_date) < 0
-        ? '逾期'
+        ? text('overdue')
         : daysUntilDate(todo.due_date) === 0
-          ? '今日'
-          : `${daysUntilDate(todo.due_date)}天后`
+          ? text('today')
+          : `${daysUntilDate(todo.due_date)}${text('daysLater')}`
       : null
 
   return (
@@ -1330,18 +1816,23 @@ function TodoCard({
           <div className="record-title-row">
             <h4>{todo.title}</h4>
             <span className={clsx('pill', priorityMeta[todo.priority].tone)}>
-              {priorityMeta[todo.priority].label}
+              {text(priorityMeta[todo.priority].labelKey)}
             </span>
           </div>
           {todo.details ? <p className="record-note">{todo.details}</p> : null}
           <div className="record-meta">
-            <span>{statusMeta[todo.status].label}</span>
+            <span>{text(statusMeta[todo.status].labelKey)}</span>
             {todo.due_date ? <span>{todo.due_date}</span> : null}
             {dueState ? <span>{dueState}</span> : null}
           </div>
         </div>
       </div>
-      <CardActions onDelete={() => onDelete(todo.id)} onEdit={() => onOpen(todo)} />
+      <CardActions
+        editLabel={text('edit')}
+        deleteLabel={text('delete')}
+        onDelete={() => onDelete(todo.id)}
+        onEdit={() => onOpen(todo)}
+      />
     </article>
   )
 }
@@ -1350,10 +1841,12 @@ function BirthdayCard({
   birthday,
   onDelete,
   onOpen,
+  text,
 }: {
   birthday: Birthday
   onDelete: (birthdayId: string) => void
   onOpen: (birthday: Birthday) => void
+  text: (key: CopyKey) => string
 }) {
   const urgent = isBirthdayWithinDays(birthday, 3)
 
@@ -1378,7 +1871,12 @@ function BirthdayCard({
           </div>
         </div>
       </div>
-      <CardActions onDelete={() => onDelete(birthday.id)} onEdit={() => onOpen(birthday)} />
+      <CardActions
+        editLabel={text('edit')}
+        deleteLabel={text('delete')}
+        onDelete={() => onDelete(birthday.id)}
+        onEdit={() => onOpen(birthday)}
+      />
     </article>
   )
 }
@@ -1389,15 +1887,25 @@ function MentorCard({
   nextReportDate,
   onDelete,
   onOpen,
+  reportsCount,
+  text,
 }: {
   daysLeft: number | null
   mentor: Mentor
   nextReportDate: string | null
   onDelete: (mentorId: string) => void
   onOpen: (mentor: Mentor) => void
+  reportsCount: number
+  text: (key: CopyKey) => string
 }) {
   const dueText =
-    daysLeft === null ? '未设周期' : daysLeft < 0 ? `已过 ${Math.abs(daysLeft)} 天` : daysLeft === 0 ? '今日可汇报' : `${daysLeft}天后`
+    daysLeft === null
+      ? text('noReportCycle')
+      : daysLeft < 0
+        ? `${text('reportOverduePrefix')}${Math.abs(daysLeft)}${text('reportOverdueSuffix')}`
+        : daysLeft === 0
+          ? text('reportToday')
+          : `${daysLeft}${text('daysLater')}`
 
   return (
     <article className="record-card mentor-card" role="button" tabIndex={0} onClick={() => onOpen(mentor)}>
@@ -1414,18 +1922,34 @@ function MentorCard({
           </div>
           <p className="record-note">{mentor.helped_with}</p>
           <div className="record-meta">
-            {mentor.report_cycle_days ? <span>{mentor.report_cycle_days}天一汇报</span> : null}
+            {mentor.report_cycle_days ? <span>{mentor.report_cycle_days}{text('reportEverySuffix')}</span> : null}
             {nextReportDate ? <span>{nextReportDate}</span> : null}
+            {reportsCount ? <span>{reportsCount} {text('reportCountSuffix')}</span> : null}
             {mentor.notes ? <span>{mentor.notes}</span> : null}
           </div>
         </div>
       </div>
-      <CardActions onDelete={() => onDelete(mentor.id)} onEdit={() => onOpen(mentor)} />
+      <CardActions
+        editLabel={text('edit')}
+        deleteLabel={text('delete')}
+        onDelete={() => onDelete(mentor.id)}
+        onEdit={() => onOpen(mentor)}
+      />
     </article>
   )
 }
 
-function CardActions({ onDelete, onEdit }: { onDelete: () => void; onEdit: () => void }) {
+function CardActions({
+  deleteLabel,
+  editLabel,
+  onDelete,
+  onEdit,
+}: {
+  deleteLabel: string
+  editLabel: string
+  onDelete: () => void
+  onEdit: () => void
+}) {
   return (
     <div className="card-actions">
       <button
@@ -1435,8 +1959,8 @@ function CardActions({ onDelete, onEdit }: { onDelete: () => void; onEdit: () =>
           event.stopPropagation()
           onEdit()
         }}
-        aria-label="编辑"
-        title="编辑"
+        aria-label={editLabel}
+        title={editLabel}
       >
         <Edit3 size={17} />
       </button>
@@ -1447,8 +1971,8 @@ function CardActions({ onDelete, onEdit }: { onDelete: () => void; onEdit: () =>
           event.stopPropagation()
           onDelete()
         }}
-        aria-label="删除"
-        title="删除"
+        aria-label={deleteLabel}
+        title={deleteLabel}
       >
         <Trash2 size={17} />
       </button>
@@ -1458,14 +1982,16 @@ function CardActions({ onDelete, onEdit }: { onDelete: () => void; onEdit: () =>
 
 function Drawer({
   children,
+  closeLabel,
   icon: Icon,
   onClose,
   title,
 }: {
   children: ReactNode
+  closeLabel: string
   icon: LucideIcon
   onClose: () => void
-  title: string
+  title: ReactNode
 }) {
   return (
     <div className="drawer-backdrop" onClick={onClose}>
@@ -1475,7 +2001,7 @@ function Drawer({
             <Icon size={22} />
             <span>{title}</span>
           </h2>
-          <button className="icon-button" type="button" onClick={onClose} aria-label="关闭">
+          <button className="icon-button" type="button" onClick={onClose} aria-label={closeLabel}>
             <X size={20} />
           </button>
         </header>
@@ -1485,27 +2011,68 @@ function Drawer({
   )
 }
 
-function FormActions({ onCancel }: { onCancel: () => void }) {
+function FormActions({
+  cancelLabel,
+  onCancel,
+  saveLabel,
+}: {
+  cancelLabel: ReactNode
+  onCancel: () => void
+  saveLabel: ReactNode
+}) {
   return (
     <div className="form-actions">
       <button className="secondary-button" type="button" onClick={onCancel}>
         <X size={18} />
-        <span>取消</span>
+        <span>{cancelLabel}</span>
       </button>
       <button className="primary-button" type="submit">
         <Save size={18} />
-        <span>保存</span>
+        <span>{saveLabel}</span>
       </button>
     </div>
   )
 }
 
-function EmptyState({ label }: { label: string }) {
+function EmptyState({ label }: { label: ReactNode }) {
   return (
     <div className="empty-state">
       <CalendarDays size={20} />
       <span>{label}</span>
     </div>
+  )
+}
+
+function EditableText({
+  className,
+  copyKey,
+  customizeMode,
+  onEdit,
+  value,
+}: {
+  className?: string
+  copyKey: CopyKey
+  customizeMode: boolean
+  onEdit: (key: CopyKey) => void
+  value: string
+}) {
+  if (!customizeMode) {
+    return <span className={className}>{value}</span>
+  }
+
+  return (
+    <span
+      className={clsx('editable-copy', className)}
+      onClick={(event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        onEdit(copyKey)
+      }}
+      title="点击编辑这段文案"
+    >
+      <Edit3 size={13} />
+      <span>{value}</span>
+    </span>
   )
 }
 

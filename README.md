@@ -42,6 +42,20 @@ Windows 也可以直接运行脚本：
 
 如果想双击启动，使用项目根目录下的 `start-panel.cmd`；双击完整检查使用 `check-panel.cmd`。
 
+## Windows + Edge PWA
+
+本机已经准备了 Edge PWA 安装入口：
+
+```powershell
+.\install-edge-pwa.cmd
+```
+
+它会完成三件事：
+
+- 启动生产预览服务：`http://127.0.0.1:4173/`
+- 在 Windows 启动文件夹创建 `TaskManagerPanelServer.lnk`，下次登录自动启动本地服务。
+- 在桌面和开始菜单创建 `Task Manager Panel.lnk`，用 Microsoft Edge 应用模式打开面板。
+
 ## 环境变量
 
 复制 `.env.example` 为 `.env.local`，填入前端需要的 Supabase 参数：

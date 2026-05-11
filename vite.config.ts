@@ -13,6 +13,7 @@ export default defineConfig({
         name: '墨迹任务面板',
         short_name: '任务面板',
         description: '个人待办、生日和大佬维护清单',
+        lang: 'zh-CN',
         theme_color: '#7d1f1f',
         background_color: '#f7f1e4',
         display: 'standalone',

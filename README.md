@@ -40,6 +40,8 @@ Windows 也可以直接运行脚本：
 .\scripts\check.ps1
 ```
 
+如果想双击启动，使用项目根目录下的 `start-panel.cmd`；双击完整检查使用 `check-panel.cmd`。
+
 ## 环境变量
 
 复制 `.env.example` 为 `.env.local`，填入前端需要的 Supabase 参数：

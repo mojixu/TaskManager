@@ -51,11 +51,17 @@ export interface MentorReport {
 }
 
 export type CopyMap = Record<string, string>
+export type AppearanceStyle = 'paper' | 'mineral' | 'night'
+
+export interface AppearanceSettings {
+  style: AppearanceStyle
+}
 
 export interface ProfileSettings {
   id?: string
   user_id?: string
   copy: CopyMap
+  appearance: AppearanceSettings
   created_at?: string
   updated_at?: string
 }

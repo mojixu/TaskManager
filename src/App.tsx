@@ -15,6 +15,7 @@ import {
   History,
   LogOut,
   Mail,
+  Palette,
   Plus,
   RotateCcw,
   Save,
@@ -38,6 +39,7 @@ import { buildMentorReportDraft, buildMentorSuggestion, sortMentorReports } from
 import { isSupabaseConfigured, supabase } from './lib/supabase'
 import type {
   Birthday,
+  AppearanceStyle,
   DashboardData,
   Mentor,
   MentorReport,
@@ -86,6 +88,9 @@ const REMINDER_EMAIL = '2309117485@qq.com'
 const LOCAL_KEY = 'task-manager-panel-data-v1'
 const defaultSettings: ProfileSettings = {
   copy: defaultCopy,
+  appearance: {
+    style: 'paper',
+  },
 }
 
 const emptyData: DashboardData = {
@@ -133,6 +138,16 @@ const navItems: Array<{ key: ViewKey; labelKey: CopyKey; icon: LucideIcon }> = [
   { key: 'todos', labelKey: 'navTodos', icon: CheckCircle2 },
   { key: 'birthdays', labelKey: 'navBirthdays', icon: Gift },
   { key: 'mentors', labelKey: 'navMentors', icon: HandHeart },
+]
+
+const styleOptions: Array<{
+  key: AppearanceStyle
+  labelKey: CopyKey
+  descKey: CopyKey
+}> = [
+  { key: 'paper', labelKey: 'stylePaperName', descKey: 'stylePaperDesc' },
+  { key: 'mineral', labelKey: 'styleMineralName', descKey: 'styleMineralDesc' },
+  { key: 'night', labelKey: 'styleNightName', descKey: 'styleNightDesc' },
 ]
 
 const statusMeta: Record<TodoStatus, { labelKey: CopyKey; icon: LucideIcon }> = {
@@ -243,6 +258,10 @@ function readLocalData(): DashboardData {
         ...defaultSettings,
         ...(parsed.settings ?? {}),
         copy: mergeCopy(parsed.settings?.copy),
+        appearance: {
+          ...defaultSettings.appearance,
+          ...(parsed.settings?.appearance ?? {}),
+        },
       },
     }
   } catch {
@@ -308,6 +327,7 @@ function App() {
   const [copyEditorValue, setCopyEditorValue] = useState('')
 
   const copy = settings.copy
+  const appearanceStyle = settings.appearance?.style ?? defaultSettings.appearance.style
   const c = useCallback((key: CopyKey) => copy[key] ?? defaultCopy[key], [copy])
 
   const currentData = useCallback(
@@ -330,6 +350,10 @@ function App() {
     setSettings({
       ...next.settings,
       copy: mergeCopy(next.settings.copy),
+      appearance: {
+        ...defaultSettings.appearance,
+        ...(next.settings.appearance ?? {}),
+      },
     })
     writeLocalData(next)
   }, [])
@@ -365,6 +389,10 @@ function App() {
         ...defaultSettings,
         ...((settingsResponse.data as ProfileSettings | null) ?? {}),
         copy: mergeCopy((settingsResponse.data as ProfileSettings | null)?.copy),
+        appearance: {
+          ...defaultSettings.appearance,
+          ...((settingsResponse.data as ProfileSettings | null)?.appearance ?? {}),
+        },
       })
     }
 
@@ -796,6 +824,7 @@ function App() {
       const payload = {
         user_id: session.user.id,
         copy: normalized.copy,
+        appearance: normalized.appearance,
       }
       const { data, error: saveError } = await supabase
         .from('profile_settings')
@@ -812,10 +841,23 @@ function App() {
         ...defaultSettings,
         ...(data as ProfileSettings),
         copy: mergeCopy((data as ProfileSettings).copy),
+        appearance: {
+          ...defaultSettings.appearance,
+          ...((data as ProfileSettings).appearance ?? {}),
+        },
       })
     } else {
       commitLocalData(currentData({ settings: normalized }))
     }
+  }
+
+  async function changeStyle(style: AppearanceStyle) {
+    await persistSettings({
+      ...settings,
+      appearance: {
+        style,
+      },
+    })
   }
 
   function openMentorReportEditor(report?: MentorReport) {
@@ -951,7 +993,7 @@ function App() {
   }
 
   return (
-    <div className="app-shell">
+    <div className={clsx('app-shell', `theme-${appearanceStyle}`)}>
       <img className="ink-landscape" src="/ink-landscape.svg" alt="" aria-hidden="true" />
       <aside className="side-nav" aria-label={c('navOverview')}>
         <div className="brand-block">
@@ -993,6 +1035,27 @@ function App() {
               <Brush size={18} />
               <span>{customizeMode ? c('doneCustomizing') : c('customize')}</span>
             </button>
+            <div className="style-switcher" aria-label={c('styleSwitcherLabel')}>
+              <span className="style-switcher-label">
+                <Palette size={16} />
+                <span>{editableText('styleSwitcherLabel')}</span>
+              </span>
+              <div className="style-options">
+                {styleOptions.map((option) => (
+                  <button
+                    className={clsx('style-option', `style-option-${option.key}`, appearanceStyle === option.key && 'active')}
+                    key={option.key}
+                    type="button"
+                    onClick={() => changeStyle(option.key)}
+                    title={c(option.descKey)}
+                    aria-label={`${c('styleSwitcherLabel')}：${c(option.labelKey)}`}
+                  >
+                    <span className="style-swatch" aria-hidden="true" />
+                    <span>{editableText(option.labelKey)}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
             {session ? (
               <button className="icon-button" type="button" onClick={handleSignOut} aria-label={c('signOut')}>
                 <LogOut size={20} />

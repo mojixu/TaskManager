@@ -59,6 +59,20 @@ Windows 也可以直接运行脚本：
 - 在 Windows 启动文件夹创建 `TaskManagerPanelServer.lnk`，下次登录自动启动本地服务。
 - 在桌面和开始菜单创建 `Task Manager Panel.lnk`，用 Microsoft Edge 应用模式打开面板。
 
+## Android 手机 PWA
+
+推荐把项目部署到 Vercel，获得公网 HTTPS 地址后在手机 Chrome 或 Edge 中安装：
+
+1. 在 Vercel 导入 GitHub 仓库 `mojixu/TaskManager`。
+2. 项目会读取 `vercel.json`，使用 Vite、`npm run build` 和 `dist` 输出目录。
+3. 在 Vercel 环境变量中配置：
+   - `VITE_SUPABASE_URL`
+   - `VITE_SUPABASE_ANON_KEY`
+4. 在 Supabase Auth URL 设置中，把 Vercel 正式域名加入 Site URL 和 Redirect URLs。
+5. 用 Android 浏览器打开 Vercel HTTPS 地址，选择“安装应用”或“添加到主屏幕”。
+
+不要把 `SUPABASE_SERVICE_ROLE_KEY`、QQ SMTP 授权码或 `CRON_SECRET` 放到 Vercel 前端环境变量中。
+
 ## 环境变量
 
 复制 `.env.example` 为 `.env.local`，填入前端需要的 Supabase 参数：

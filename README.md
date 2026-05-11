@@ -30,6 +30,14 @@ npm.cmd run dev
 npm.cmd run lint
 npm.cmd run test
 npm.cmd run build
+npm.cmd run check
+```
+
+Windows 也可以直接运行脚本：
+
+```powershell
+.\scripts\dev.ps1
+.\scripts\check.ps1
 ```
 
 ## 环境变量
@@ -56,10 +64,29 @@ QQ 邮箱需要在邮箱设置中开启 SMTP，并使用授权码，不要使用
 ## Supabase 部署
 
 1. 创建 Supabase 项目，启用 Email/Password 登录。
-2. 运行 `supabase/migrations` 中的 SQL，创建表、RLS、定时任务。
-3. 部署 Edge Function：`supabase functions deploy send-birthday-reminders`。
-4. 设置 Edge Function secrets。
-5. 在数据库执行以下配置，让 `pg_cron` 每天北京时间 20:00 调用云函数：
+2. 复制项目 ref、Supabase URL、anon key 后运行本机配置脚本：
+
+```powershell
+.\scripts\configure-supabase.ps1 `
+  -ProjectRef your-project-ref `
+  -SupabaseUrl https://your-project.supabase.co `
+  -SupabaseAnonKey your-supabase-anon-key
+```
+
+3. 推送数据库迁移，创建表、RLS、定时任务：
+
+```bash
+npm.cmd run supabase:db:push
+```
+
+4. 部署 Edge Function：
+
+```bash
+npm.cmd run supabase:functions:deploy
+```
+
+5. 设置 Edge Function secrets。
+6. 在数据库执行以下配置，让 `pg_cron` 每天北京时间 20:00 调用云函数：
 
 ```sql
 alter database postgres set app.settings.supabase_url = 'https://your-project.supabase.co';
